@@ -2,7 +2,6 @@
 import json
 import pathlib
 import shutil
-from urllib.parse import urlparse, unquote
 from playwright.sync_api import sync_playwright
 
 out = pathlib.Path('review')
@@ -48,7 +47,9 @@ try:
             page.set_viewport_size({'width':390,'height':844})
             load(page, route)
             page.add_style_tag(content='html {font-size:200% !important;}')
-            check(f'text enlargement {route or "home"}', not page.evaluate('document.documentElement.scrollWidth > innerWidth + 1'))
+            overflow = page.evaluate('document.documentElement.scrollWidth > innerWidth + 1')
+            offenders = page.locator('body *').evaluate_all('(els)=>els.filter(e=>{const r=e.getBoundingClientRect();return r.width>0 && (r.right>innerWidth+1 || r.left < -1) && getComputedStyle(e).position!=="fixed"}).map(e=>({tag:e.tagName,cls:e.className,right:e.getBoundingClientRect().right,left:e.getBoundingClientRect().left})).slice(0,25)') if overflow else []
+            check(f'text enlargement {route or "home"}', not overflow, offenders)
             page.screenshot(path=str(out/f'{route.strip("/") or "home"}-text-200.png'),full_page=True)
 
         page.set_viewport_size({'width':390,'height':844})
@@ -78,7 +79,6 @@ try:
         check('reduced-motion feedback disabled', page.locator('.photo img').first.evaluate('(e)=>getComputedStyle(e).transitionDuration')=='0s')
         check('no continuous WebGL or audio', page.locator('canvas,audio,video').count()==0)
 
-        # Check internal URL destinations, independently of font/photo dependencies.
         seen=set()
         for route in ['', 'events/', 'visit/']:
             load(page,route)
@@ -92,9 +92,11 @@ try:
         load(page,'visit/')
         context.grant_permissions(['clipboard-read','clipboard-write'])
         page.locator('[data-copy-address]').click()
+        page.wait_for_function('document.querySelector(".copy-status").textContent === "Address copied."')
         check('copy address success',page.locator('.copy-status').inner_text()=='Address copied.')
-        page.evaluate('navigator.clipboard.writeText = async () => {throw new Error("test denial")}')
+        page.evaluate('() => { navigator.clipboard.writeText = async () => {throw new Error("test denial")}; }')
         page.locator('[data-copy-address]').click()
+        page.wait_for_function('document.querySelector(".copy-status").textContent.includes("Select the address")')
         check('copy address recovery', 'Select the address' in page.locator('.copy-status').inner_text())
         context.close()
 
@@ -107,7 +109,6 @@ try:
         check('no-JS dated calendar visible',np.locator('[data-event-date]').count()==7)
         nojs.close()
 
-        # End-of-day event expiry uses America/New_York, including the UTC boundary.
         for iso,visible in [('2026-09-12T03:59:00Z',True),('2026-09-12T04:01:00Z',False),('2027-01-01T12:00:00Z',False)]:
             c=browser.new_context()
             c.add_init_script('''{const D=Date; window.Date=class extends D {constructor(...a){super(...(a.length?a:["'''+iso+'''"]));} static now(){return new D("'''+iso+'''").getTime();}};}''')
